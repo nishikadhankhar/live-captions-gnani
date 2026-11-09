@@ -1,0 +1,10 @@
+.env
+cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.part
+.DS_Store
+node_modules/
+dist/
+.public_url
