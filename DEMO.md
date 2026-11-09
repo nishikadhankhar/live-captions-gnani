@@ -30,7 +30,7 @@ It stops working when you press Ctrl+C.
 
 ## Rehearse once (5 minutes)
 
-- [ ] Use **Google Chrome** on the laptop (captions use Chrome's speech recognition).
+- [ ] `backend/.env` has `GNANI_API_KEY` (captions use Gnani; without it, use Chrome).
 - [ ] Mic allowed (Chrome asks the first time, then remembers).
 - [ ] Say a sentence: on your phone, words appear as you speak, then the finished line.
 - [ ] Send a question from your phone → it appears under **Questions** on the laptop.

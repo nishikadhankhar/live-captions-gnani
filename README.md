@@ -36,20 +36,27 @@ cd backend && pip3 install -r requirements.txt && ./run.sh     # API on :8000
 cd frontend && npm install && npm run dev                      # http://localhost:5173
 ```
 
-**Use Google Chrome on the speaker's laptop**: the captions come from Chrome's built-in
-speech recognition (it needs internet). Attendees can use any phone browser.
+**Captions come from Gnani's realtime speech-to-text** (Prisma v3.0) when `backend/.env` has
+`GNANI_API_KEY=...`: it detects English, Hindi and other Indian languages per sentence and keeps
+English words in Latin script inside Hindi (Hinglish). Without a key, or with
+`CAPTIONS_ENGINE=browser`, it falls back to Chrome's built-in speech recognition (use Chrome).
+Pin one language with `GNANI_LANGUAGE=hi-IN` (default `indic-auto`). Attendees can use any
+phone browser.
 
 ## Test
 
 ```bash
-cd backend && python3 -m pytest tests/ -q --timeout 20     # 29 tests, ~1 s
+cd backend && python3 -m pytest tests/ -q --timeout 20     # 36 tests, ~3 s (Gnani is faked)
 cd frontend && npx tsc --noEmit                             # type-check
 ```
 
 ## How it works
 
 ```
-Speaker laptop (Chrome)                 Server                      Attendee phones
+Speaker laptop                          Server                      Attendee phones
+mic ── PCM 16 kHz ──────────────────▶  /ws/.../audio ◀─▶ Gnani speech-to-text
+                                         (words so far, then the finished line)
+    or Chrome speech recognition:
 mic → speech recognition ── partial ──▶  /ws/.../speak  ── partial ──▶  /ws/.../listen
                           ── final ───▶  keeps last 200 ── caption ──▶  (late arrivals get
                                          lines                           the last 50)
@@ -61,6 +68,7 @@ questions + people count ◀──────────────          
 | `POST /api/events` | speaker | start an event → code + secret speaker token |
 | `GET /api/events/{code}/qr.svg` | speaker | QR code (points at the phone link) |
 | `WS /ws/events/{code}/speak?token=` | speaker | send `{"type":"partial"\|"final","text"}`; answer a question with `{"type":"answer","question_id":3}` … `{"type":"answer","question_id":null}`; receive questions and how many people are reading |
+| `WS /ws/events/{code}/audio?token=` | speaker | binary PCM16 mono 16 kHz from the mic; the server relays it to Gnani and sends the `partial` / `caption` events itself. `{"type":"stop"}` finishes the last line. Used when `GET /api/config` says `"stt": "gnani"` |
 | `PATCH /api/events/{code}/questions/{id}` | speaker | mark answered (`x-token` header) |
 | `POST /api/events/{code}/questions/{id}/block` | speaker | block the phone that asked it: removes all its questions, drops any new ones (`x-token` header) |
 | `DELETE /api/events/{code}` | speaker | end the event (`x-token` header) |
@@ -69,7 +77,8 @@ questions + people count ◀──────────────          
 | `POST /api/events/{code}/questions` | attendee | `{"text", "name"?, "client_id"}`; one per 5 s per phone |
 
 No database and no accounts: events live in memory and are deleted when ended or after
-6 hours idle. Audio never leaves the speaker's browser except to Chrome's speech recognition.
+6 hours idle. Audio goes from the speaker's browser through this server to Gnani (or, in
+Chrome mode, to Chrome's speech recognition) and is not stored.
 
 ## Files
 

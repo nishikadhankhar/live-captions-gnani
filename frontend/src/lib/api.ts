@@ -44,12 +44,18 @@ export function wsUrl(path: string) {
 // --------------------------------------------------------------------------- //
 // Where phones should go: the tunnel / Wi-Fi address from the backend, else this page.
 let phoneUrl: string | null = null;
+let stt: "gnani" | "browser" = "browser";
 
 export async function loadConfig() {
   try {
-    phoneUrl = (await call<{ phone_url: string | null }>("/api/config")).phone_url;
+    const c = await call<{ phone_url: string | null; stt?: "gnani" | "browser" }>("/api/config");
+    phoneUrl = c.phone_url;
+    stt = c.stt ?? "browser";
   } catch { /* backend down: fall back to this page's address */ }
 }
+
+/** Which speech recognition makes the captions: Gnani on the server, or Chrome's own. */
+export const sttEngine = () => stt;
 
 export const phoneBase = () => phoneUrl ?? window.location.origin;
 

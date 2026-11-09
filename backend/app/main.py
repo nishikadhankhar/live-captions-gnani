@@ -3,6 +3,9 @@
 Speaker (laptop):
   POST   /api/events                      start an event        -> code, speaker token
   WS     /ws/events/{code}/speak?token=   send captions: {"type":"partial"|"final","text"}
+                                          (when /api/config says "stt": "browser")
+  WS     /ws/events/{code}/audio?token=   or stream the mic as binary PCM16 mono 16 kHz; the
+                                          server makes the captions with Gnani (stt: "gnani")
                                           answer a question: {"type":"answer","question_id": 3}
                                           ... speak ... then {"type":"answer","question_id": null}
                                           receive: questions, listener count
@@ -30,7 +33,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from . import gnani
 from .events import QUESTION_EVERY_S, QUESTION_MAX, Event, store
+
+gnani.load_env()
 
 app = FastAPI(title="Live Captions API", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -81,8 +87,9 @@ def health():
 
 @app.get("/api/config")
 def config():
-    """Where phones should go. None means only this laptop can open the app."""
-    return {"phone_url": public_url()}
+    """Where phones should go (None: only this laptop can open the app), and which speech
+    recognition makes the captions: Gnani on the server, or Chrome's in the speaker's browser."""
+    return {"phone_url": public_url(), "stt": "gnani" if gnani.enabled() else "browser"}
 
 
 # --------------------------------------------------------------------------- #
@@ -188,6 +195,55 @@ async def speak(ws: WebSocket, code: str, token: str = ""):
         if store.get(code) is ev and not ev.speakers:
             ev.partial = ""
             await ev.to_listeners({"type": "live", "live": False})
+
+
+@app.websocket("/ws/events/{code}/audio")
+async def audio(ws: WebSocket, code: str, token: str = ""):
+    """The speaker's microphone as binary PCM16 mono 16 kHz. Gnani turns it into captions."""
+    ev = store.get(code)
+    await ws.accept()
+    if not ev or token != ev.token:
+        await ws.send_json({"type": "error", "error": "Event not found or wrong speaker token"})
+        await ws.close(code=4403)
+        return
+    if not gnani.enabled():
+        await ws.send_json({"type": "error", "error": "Gnani speech-to-text is not set up on the server"})
+        await ws.close(code=4501)
+        return
+
+    async def on_partial(text: str) -> None:
+        if store.get(code) is ev and text and text != ev.partial:
+            ev.partial = text[:1000]
+            await ev.everyone({"type": "partial", "text": ev.partial})
+
+    async def on_text(text: str) -> None:
+        if store.get(code) is not ev:
+            return
+        text = text[:1000]
+        if text:
+            c = ev.add_caption(text)
+            await ev.everyone({"type": "caption", "caption": c.model_dump()})
+        elif ev.partial:
+            ev.partial = ""
+            await ev.everyone({"type": "partial", "text": ""})
+
+    async def on_error(message: str) -> None:
+        try:
+            await ws.send_json({"type": "error", "error": message})
+        except Exception:               # noqa: BLE001
+            pass
+
+    await ws.send_json({"type": "ready"})
+    try:
+        await gnani.relay(ws, on_partial, on_text, on_error)
+    finally:
+        if store.get(code) is ev and ev.partial:
+            ev.partial = ""
+            await ev.everyone({"type": "partial", "text": ""})
+        try:
+            await ws.close()
+        except RuntimeError:            # already closed
+            pass
 
 
 def _ref(ev: Event) -> dict | None:

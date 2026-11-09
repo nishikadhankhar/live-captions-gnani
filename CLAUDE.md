@@ -32,8 +32,16 @@ Always pass `--timeout`: a WebSocket test waiting for an event that never comes 
 
 ## How it fits together
 
-- Captions come from **Chrome's speech recognition on the speaker's laptop** (`lib/speech.ts`).
-  It sends `partial` (words so far) and `final` (a finished line) over `/ws/events/{code}/speak`.
+- Captions come from **Gnani's realtime speech-to-text** when `GNANI_API_KEY` is set
+  (`/api/config` → `"stt": "gnani"`). The speaker's browser (`lib/gnaniMic.ts`) streams the mic
+  as PCM16 mono 16 kHz over `/ws/events/{code}/audio`; `backend/app/gnani.py` re-frames it to
+  the 1024-byte frames Gnani requires and relays it (the key can't go to the browser), then
+  the server itself sends `partial` / `caption` to everyone. Gnani facts learned the hard way:
+  streaming rejects a language list (`en-IN,hi-IN`), so we use `indic-auto`; word-by-word
+  partials need the undocumented `x-partials: true` header, and then finals arrive as
+  `final_transcript` (not `transcript`); a session ends after 15 min, so the relay reconnects.
+- Without a key (or `CAPTIONS_ENGINE=browser`) captions come from **Chrome's speech
+  recognition** (`lib/speech.ts`), which sends `partial` / `final` over `/ws/events/{code}/speak`.
 - The server (`backend/app/events.py`) fans them out to every `/ws/events/{code}/listen` phone,
   in parallel with a per-send timeout so one slow phone can't stall the rest. It keeps the last
   200 lines; late arrivals get the last 50.
@@ -60,12 +68,13 @@ Always pass `--timeout`: a WebSocket test waiting for an event that never comes 
 - A test script acting as a phone must keep reading incoming events, or its buffer fills and
   it gets disconnected.
 - The browser pane used for checking has no microphone: drive captions from a Python
-  `websockets` script using the speaker token.
+  `websockets` script using the speaker token (for Gnani, stream PCM into `/audio`).
+- Gnani tests use `FakeGnani` (a local websockets server); never call the real API from tests.
 - `demo.sh` uses ports 8000/5173 (and 5174 in wifi mode). Test elsewhere if it's running.
 
 ## Secrets
 
-`backend/.env` and `.public_url` are gitignored. Scan staged files before pushing.
+`backend/.env` (GNANI_API_KEY) and `.public_url` are gitignored. Scan staged files before pushing.
 
 ## Commits
 

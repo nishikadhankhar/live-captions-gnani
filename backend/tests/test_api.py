@@ -60,9 +60,9 @@ class TestEvents:
     def test_phone_url_from_tunnel(self, monkeypatch):
         monkeypatch.setattr(main, "PUBLIC_URL_FILE", main.Path("/nonexistent"))
         monkeypatch.delenv("PUBLIC_URL", raising=False)
-        assert client.get("/api/config").json() == {"phone_url": None}
+        assert client.get("/api/config").json()["phone_url"] is None
         monkeypatch.setenv("PUBLIC_URL", "https://abc.trycloudflare.com/")
-        assert client.get("/api/config").json() == {"phone_url": "https://abc.trycloudflare.com"}
+        assert client.get("/api/config").json()["phone_url"] == "https://abc.trycloudflare.com"
         assert start()["join_url"].startswith("https://abc.trycloudflare.com/e/")
 
     def test_only_speaker_can_end(self):
@@ -399,4 +399,164 @@ class TestLive:
                 assert r.status_code == 200 and time.time() - t0 < 3
                 assert await a.wait("ended")
                 await stuck.close()
+        run(go())
+
+
+# --------------------------------------------------------------------------- #
+#  Captions from Gnani (against a fake Gnani server: no API credit, works offline)
+# --------------------------------------------------------------------------- #
+class FakeGnani:
+    """Speaks Gnani's streaming protocol: a partial every 10 frames, a final line on commit."""
+
+    def __init__(self):
+        self.headers: dict = {}
+        self.bad_frames = 0
+        self.frames = 0
+
+    async def handler(self, conn):
+        h = conn.request.headers
+        self.headers = dict(h)
+        if h.get("language_code") == "xx-IN":
+            await conn.send(json.dumps({"type": "error", "message": "Invalid language_code: xx-IN"}))
+            await conn.close(1008)
+            return
+        await conn.send(json.dumps({"type": "connected", "config": {"sample_rate": 16000}}))
+        words = ["namaste", "everyone", "welcome"]
+        async for msg in conn:
+            if isinstance(msg, bytes):
+                self.frames += 1
+                self.bad_frames += len(msg) != 1024
+                if self.frames % 10 == 0:
+                    text = " ".join(words[: min(self.frames // 10, 3)])
+                    await conn.send(json.dumps({"type": "partial_transcript", "text": text}))
+            elif json.loads(msg).get("type") == "commit":
+                await conn.send(json.dumps({"type": "final_transcript", "text": "Namaste everyone, welcome."}))
+
+    @staticmethod
+    def reject_bad_key(conn, request):
+        if request.headers.get("x-api-key-id") == "bad":
+            return conn.respond(401, "Unauthorized")
+
+
+@pytest.fixture(scope="module")
+def fake_gnani():
+    from websockets.asyncio.server import serve
+
+    fake = FakeGnani()
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    box = {}
+
+    async def main():
+        async with serve(fake.handler, "127.0.0.1", 0, process_request=FakeGnani.reject_bad_key) as srv:
+            box["port"] = srv.sockets[0].getsockname()[1]
+            ready.set()
+            await asyncio.Future()
+
+    threading.Thread(target=lambda: loop.run_until_complete(main()), daemon=True).start()
+    ready.wait(5)
+    fake.url = f"ws://127.0.0.1:{box['port']}"
+    yield fake
+    loop.call_soon_threadsafe(loop.stop)
+
+
+@pytest.fixture
+def use_gnani(fake_gnani, monkeypatch):
+    from app import gnani
+    monkeypatch.setattr(gnani, "URL", fake_gnani.url)
+    monkeypatch.setenv("GNANI_API_KEY", "test-key")
+    monkeypatch.delenv("GNANI_LANGUAGE", raising=False)
+    monkeypatch.delenv("CAPTIONS_ENGINE", raising=False)
+    return fake_gnani
+
+
+async def speak_audio(server, code, token, frames=35, chunk=4096):
+    """Act like the browser mic: send 16 kHz PCM in uneven blocks, then stop."""
+    audio = bytes(frames * 1024)
+    async with Socket(ws(server, f"/ws/events/{code}/audio?token={token}")) as mic:
+        assert await mic.wait("ready")
+        for i in range(0, len(audio), chunk):
+            await mic.ws.send(audio[i:i + chunk])
+            await asyncio.sleep(0.01)
+        await mic.send(type="stop")
+        await asyncio.sleep(0.5)
+
+
+class TestGnani:
+    def test_config_says_which_engine(self, monkeypatch):
+        monkeypatch.setenv("GNANI_API_KEY", "k")
+        monkeypatch.delenv("CAPTIONS_ENGINE", raising=False)
+        assert client.get("/api/config").json()["stt"] == "gnani"
+        monkeypatch.setenv("CAPTIONS_ENGINE", "browser")      # force Chrome's recognition
+        assert client.get("/api/config").json()["stt"] == "browser"
+        monkeypatch.delenv("CAPTIONS_ENGINE")
+        monkeypatch.setenv("GNANI_API_KEY", "")
+        assert client.get("/api/config").json()["stt"] == "browser"
+
+    def test_audio_becomes_captions_on_every_phone(self, server, use_gnani):
+        ev = httpx.post(server + "/api/events", json={}).json()
+        code = ev["code"]
+        async def go():
+            async with Socket(ws(server, f"/ws/events/{code}/listen")) as phone:
+                await phone.wait("state")
+                await speak_audio(server, code, ev["token"])
+                assert (await phone.wait("partial"))["text"] == "namaste"
+                cap = (await phone.wait("caption", timeout=5))["caption"]
+                assert cap["text"] == "Namaste everyone, welcome."
+        run(go())
+        h = use_gnani.headers
+        assert h["x-api-key-id"] == "test-key" and h["model"] == "prisma-v3.0"
+        assert h["language_code"] == "indic-auto" and h["x-sample-rate"] == "16000"
+        assert h["x-partials"] == "true"
+        assert use_gnani.bad_frames == 0                       # re-framed to exactly 1024 bytes
+
+    def test_captions_link_to_the_question_being_answered(self, server, use_gnani):
+        ev = httpx.post(server + "/api/events", json={}).json()
+        code = ev["code"]
+        q = httpx.post(f"{server}/api/events/{code}/questions",
+                       json={"text": "Is it free?", "client_id": "phone-1"}).json()
+        async def go():
+            async with Socket(ws(server, f"/ws/events/{code}/speak?token={ev['token']}")) as sp, \
+                       Socket(ws(server, f"/ws/events/{code}/listen")) as phone:
+                await sp.wait("state")
+                await sp.send(type="answer", question_id=q["id"])
+                await phone.wait("answering")
+                await speak_audio(server, code, ev["token"], frames=12)
+                cap = (await phone.wait("caption", timeout=5))["caption"]
+                assert cap["answer_to"]["text"] == "Is it free?"
+        run(go())
+
+    def test_only_the_speaker_can_send_audio(self, server, use_gnani):
+        ev = httpx.post(server + "/api/events", json={}).json()
+        async def go():
+            async with Socket(ws(server, f"/ws/events/{ev['code']}/audio?token=bad")) as mic:
+                assert "token" in (await mic.wait("error"))["error"]
+        run(go())
+
+    def test_bad_key_is_reported_to_the_speaker(self, server, use_gnani, monkeypatch):
+        monkeypatch.setenv("GNANI_API_KEY", "bad")
+        ev = httpx.post(server + "/api/events", json={}).json()
+        async def go():
+            async with Socket(ws(server, f"/ws/events/{ev['code']}/audio?token={ev['token']}")) as mic:
+                await mic.wait("ready")
+                await mic.ws.send(bytes(4096))
+                assert "API key" in (await mic.wait("error", timeout=5))["error"]
+        run(go())
+
+    def test_bad_language_is_reported_not_retried(self, server, use_gnani, monkeypatch):
+        monkeypatch.setenv("GNANI_LANGUAGE", "xx-IN")
+        ev = httpx.post(server + "/api/events", json={}).json()
+        async def go():
+            async with Socket(ws(server, f"/ws/events/{ev['code']}/audio?token={ev['token']}")) as mic:
+                await mic.wait("ready")
+                await mic.ws.send(bytes(4096))
+                assert "language" in (await mic.wait("error", timeout=5))["error"]
+        run(go())
+
+    def test_not_configured(self, server, monkeypatch):
+        monkeypatch.setenv("GNANI_API_KEY", "")
+        ev = httpx.post(server + "/api/events", json={}).json()
+        async def go():
+            async with Socket(ws(server, f"/ws/events/{ev['code']}/audio?token={ev['token']}")) as mic:
+                assert "not set up" in (await mic.wait("error"))["error"]
         run(go())

@@ -3,12 +3,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { go } from "../App";
-import { api, loadSpeaker, phonesCantReach, type Caption, type Question, type QuestionRef } from "../lib/api";
+import { api, loadSpeaker, phonesCantReach, sttEngine, type Caption, type Question, type QuestionRef } from "../lib/api";
+import { micSupported, streamMic } from "../lib/gnaniMic";
 import { listen, speechSupported, type Listener } from "../lib/speech";
 import { useSocket } from "../lib/useSocket";
 import CaptionList from "./CaptionList";
 
 const btn = "rounded-md border border-line px-3 py-1.5 text-sm";
+const gnani = () => sttEngine() === "gnani";
+const canCaption = () => (gnani() ? micSupported() : speechSupported());
 
 export default function Speaker({ code }: { code: string }) {
   const [me] = useState(() => loadSpeaker(code));
@@ -36,8 +39,11 @@ export default function Speaker({ code }: { code: string }) {
       setAnswering(ev.question);
     } else if (ev.type === "notice") {
       setNotice(ev.text);
+    } else if (ev.type === "partial") {
+      if (gnani()) setPartial(ev.text);                // with Gnani the server makes the captions
     } else if (ev.type === "caption") {
       setCaptions((c) => (c.some((x) => x.id === ev.caption.id) ? c : [...c, ev.caption]));
+      if (gnani()) setPartial("");
     } else if (ev.type === "question") {
       setQuestions((q) => [...q, ev.question]);
     } else if (ev.type === "question_update") {
@@ -56,6 +62,15 @@ export default function Speaker({ code }: { code: string }) {
   const startMic = () => {
     setMicError("");
     if (rec.current) return;
+    const onError = (m: string) => {
+      setMicError(m);
+      if (gnani() || m.includes("denied")) { rec.current?.stop(); rec.current = null; setMicOn(false); }
+    };
+    if (gnani()) {
+      rec.current = streamMic({ path: `/ws/events/${code}/audio?token=${me!.token}`, onError });
+      setMicOn(true);
+      return;
+    }
     rec.current = listen({
       lang: "en-IN",
       onPartial: (t) => { setPartial(t); send({ type: "partial", text: t }); },
@@ -141,9 +156,11 @@ export default function Speaker({ code }: { code: string }) {
 
         <div className="mt-auto space-y-2">
           {micError && <p role="alert" className="text-sm text-danger">{micError}</p>}
-          {!speechSupported() && <p className="text-sm text-danger">Captions need Google Chrome.</p>}
+          {!canCaption() && (
+            <p className="text-sm text-danger">{gnani() ? "This browser can't use the microphone." : "Captions need Google Chrome."}</p>
+          )}
           {status !== "live" && <p className="text-sm text-muted">Connecting…</p>}
-          <button onClick={() => (micOn ? stopMic() : startMic())} disabled={!speechSupported()} aria-pressed={micOn}
+          <button onClick={() => (micOn ? stopMic() : startMic())} disabled={!canCaption()} aria-pressed={micOn}
                   className={`w-full rounded-md px-4 py-3 text-lg font-medium text-white disabled:opacity-50 ${micOn ? "bg-danger" : "bg-accent"}`}>
             {micOn ? "Stop captioning" : "Start captioning"}
           </button>
@@ -177,7 +194,7 @@ export default function Speaker({ code }: { code: string }) {
                   </p>
                 </div>
                 {!q.answered && answering?.id !== q.id && (
-                  <button onClick={() => answer(q)} disabled={!speechSupported()}
+                  <button onClick={() => answer(q)} disabled={!canCaption()}
                           className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-50">
                     Answer
                   </button>
