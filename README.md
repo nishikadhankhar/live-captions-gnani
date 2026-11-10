@@ -3,6 +3,9 @@
 Browser-based live captioning for in-person events, with a way for the audience to ask
 questions. Not a call, not a chat: the speaker talks, everyone reads along on their phone.
 
+**One-page pitch: [PITCH.md](PITCH.md).** Captions are made by Gnani's Prisma v3.0 real-time
+speech-to-text (Hindi, English and Hinglish).
+
 1. The speaker (or organiser) opens the app on a laptop and starts an event.
    A big **QR code** appears; put it on the projector.
 2. People in the audience **scan it** with their phone camera. A page opens straight away:
