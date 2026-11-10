@@ -40,7 +40,7 @@ cd frontend && npm install && npm run dev                      # http://localhos
 `GNANI_API_KEY=...`: it detects English, Hindi and other Indian languages per sentence and keeps
 English words in Latin script inside Hindi (Hinglish). Without a key, or with
 `CAPTIONS_ENGINE=browser`, it falls back to Chrome's built-in speech recognition (use Chrome).
-Pin one language with `GNANI_LANGUAGE=hi-IN` (default `indic-auto`). Attendees can use any
+Default language `hi-IN` (Hindi + English); use `GNANI_LANGUAGE=indic-auto` for other Indian languages. Attendees can use any
 phone browser.
 
 ## Test

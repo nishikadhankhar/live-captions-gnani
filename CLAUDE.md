@@ -37,7 +37,8 @@ Always pass `--timeout`: a WebSocket test waiting for an event that never comes 
   as PCM16 mono 16 kHz over `/ws/events/{code}/audio`; `backend/app/gnani.py` re-frames it to
   the 1024-byte frames Gnani requires and relays it (the key can't go to the browser), then
   the server itself sends `partial` / `caption` to everyone. Gnani facts learned the hard way:
-  streaming rejects a language list (`en-IN,hi-IN`), so we use `indic-auto`; word-by-word
+  streaming rejects a language list (`en-IN,hi-IN`); `indic-auto` sometimes wrote real-mic Hindi
+  in Punjabi letters, so the default is `hi-IN` (English still comes out in Latin letters); word-by-word
   partials need the undocumented `x-partials: true` header, and then finals arrive as
   `final_transcript` (not `transcript`); a session ends after 15 min, so the relay reconnects.
 - Without a key (or `CAPTIONS_ENGINE=browser`) captions come from **Chrome's speech

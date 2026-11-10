@@ -506,7 +506,7 @@ class TestGnani:
         run(go())
         h = use_gnani.headers
         assert h["x-api-key-id"] == "test-key" and h["model"] == "prisma-v3.0"
-        assert h["language_code"] == "indic-auto" and h["x-sample-rate"] == "16000"
+        assert h["language_code"] == "hi-IN" and h["x-sample-rate"] == "16000"
         assert h["x-partials"] == "true"
         assert use_gnani.bad_frames == 0                       # re-framed to exactly 1024 bytes
 
@@ -560,3 +560,9 @@ class TestGnani:
             async with Socket(ws(server, f"/ws/events/{ev['code']}/audio?token={ev['token']}")) as mic:
                 assert "not set up" in (await mic.wait("error"))["error"]
         run(go())
+
+    def test_english_lines_get_a_full_stop_not_a_danda(self):
+        from app.gnani import tidy
+        assert tidy("Hello everyone।") == "Hello everyone."
+        assert tidy("Hello, मेरा नाम निशिका है।") == "Hello, मेरा नाम निशिका है।"
+        assert tidy("ਮੇਰਾ ਨਾਮ।") == "ਮੇਰਾ ਨਾਮ।"

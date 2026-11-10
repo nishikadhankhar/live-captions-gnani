@@ -55,9 +55,10 @@ def headers() -> dict[str, str]:
     return {
         "x-api-key-id": api_key(),
         "model": "prisma-v3.0",
-        # indic-auto detects the language per sentence (English, Hindi, Tamil...). Streaming
-        # rejects a list like "en-IN,hi-IN" despite the docs; use one code to pin a language.
-        "language_code": os.environ.get("GNANI_LANGUAGE", "indic-auto"),
+        # hi-IN still writes English sentences in English (Latin) letters, and stops short Hindi
+        # phrases being written in Punjabi letters, which indic-auto did ("मेरा नाम" -> "ਮੇਰਾ ਨਾਮ").
+        # Set GNANI_LANGUAGE=indic-auto for other Indian languages. Streaming rejects lists.
+        "language_code": os.environ.get("GNANI_LANGUAGE", "hi-IN"),
         # English words stay in Latin script inside Hindi sentences (Hinglish).
         "format": os.environ.get("GNANI_FORMAT", "codemix"),
         "x-sample-rate": str(SAMPLE_RATE),
@@ -65,6 +66,13 @@ def headers() -> dict[str, str]:
         "x-max-speech-s": "12",               # someone who never pauses still gets lines
         "x-partials": "true",                 # words as they are spoken
     }
+
+
+def tidy(text: str) -> str:
+    """An English-only line ends with "." not the Hindi danda "।" (hi-IN adds it)."""
+    if "।" in text and not any("\u0900" <= ch <= "\u0dff" and ch not in "।॥" for ch in text):
+        text = text.replace("।", ".")
+    return text
 
 
 OnText = Callable[[str], Awaitable[None]]
@@ -153,7 +161,7 @@ async def _session(queue: asyncio.Queue, on_partial: OnText, on_text: OnText) ->
             if kind == "partial_transcript":
                 await on_partial(" ".join(str(msg.get("text", "")).split()))
             elif kind in ("final_transcript", "transcript"):
-                await on_text(" ".join(str(msg.get("text", "")).split()))
+                await on_text(tidy(" ".join(str(msg.get("text", "")).split())))
             elif kind == "error":
                 text = str(msg.get("message", "unknown error"))
                 log.warning("gnani error: %s", text)
