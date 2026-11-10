@@ -8,3 +8,6 @@ __pycache__/
 node_modules/
 dist/
 .public_url
+
+# local notes for AI coding tools
+CLAUDE.md
